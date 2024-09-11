@@ -25,11 +25,13 @@ def seed(seed):
 
 def build_dataset(trajectories: list) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     s = np.concatenate([traj["observations"][:-1] for traj in trajectories])
+    s_img = np.concatenate([traj["img_observations"][:-1] for traj in trajectories])
     a = np.concatenate([traj["actions"][:-1] for traj in trajectories])
     if len(a.shape) == 1:
         a = np.expand_dims(a, axis=-1)
     sp = np.concatenate([traj["observations"][1:] for traj in trajectories])
-    return s, a, sp
+    sp_img = np.concatenate([traj["img_observations"][1:] for traj in trajectories])
+    return (s, s_img), a, (sp, sp_img)
 
 def load_data(config):
     # TODO limit data number

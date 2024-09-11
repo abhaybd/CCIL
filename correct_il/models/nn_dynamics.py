@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import torchvision
 from tqdm import tqdm
 from typing import Callable, Sequence, Tuple
 from functools import partial
@@ -40,9 +41,15 @@ class WorldModel:
         """loss_fn is of the signature (X, Y_pred, Y) -> {loss}"""
         self.loss_fn = construct_loss_fn(d_config, self) # default loss is MSE on Y
 
+        resnet = torchvision.models.resnet18(weights="IMAGENET1K_V1")
+        resnet.fc = nn.Identity()
+        self.img_enc = replace_bn_with_gn(resnet)
+        self.img_enc.to(self.device)
+
     def to(self, device):
         self.dynamics_net.to(device)
         self.device = device
+        self.img_enc.to(device)
 
     def is_cuda(self):
         return next(self.dynamics_net.parameters()).is_cuda
@@ -61,43 +68,30 @@ class WorldModel:
     def f(self, s, a):
         return self.dynamics_net.predict(s, a)
 
-    def init_normalization_to_data(self, s, a, sp, set_transformations=True):
-        # set network transformations
-        if set_transformations:
-            s_shift, a_shift = torch.mean(s, dim=0), torch.mean(a, dim=0)
-            s_scale, a_scale = torch.mean(torch.abs(s - s_shift), dim=0), torch.mean(torch.abs(a - a_shift), dim=0)
-            out_shift = torch.mean(sp-s, dim=0)
-            out_scale = torch.mean(torch.abs(sp-s-out_shift), dim=0)
-            self.dynamics_net.set_transformations(s_shift, s_scale, a_shift, a_scale, out_shift, out_scale)
-        else:
-            s_shift     = torch.zeros(self.state_dim).cuda()
-            s_scale    = torch.ones(self.state_dim).cuda()
-            a_shift     = torch.zeros(self.act_dim).cuda()
-            a_scale    = torch.ones(self.act_dim).cuda()
-            out_shift   = torch.zeros(self.state_dim).cuda()
-            out_scale  = torch.ones(self.state_dim).cuda()
-        return (s_shift, s_scale, a_shift, a_scale, out_shift, out_scale)
-
-    def fit_dynamics(self, s, a, sp, batch_size, train_epochs, max_steps=1e10,
+    def fit_dynamics(self, s_, a, sp_, batch_size, train_epochs, max_steps=1e10,
                      set_transformations=True, *args, **kwargs):
         # move data to correct devices
-        assert type(s) == type(a) == type(sp)
-        assert s.shape[0] == a.shape[0] == sp.shape[0]
-        if type(s) == np.ndarray:
-            s = torch.from_numpy(s).float()
+        s_vec, s_img = s_
+        sp_vec, sp_img = sp_
+        assert type(s_vec) == type(a) == type(sp_vec)
+        assert s_vec.shape[0] == a.shape[0] == sp_vec.shape[0]
+        if type(s_[0]) == np.ndarray:
+            s_vec = torch.from_numpy(s_vec).float()
+            s_img = torch.from_numpy(s_img).float()
             a = torch.from_numpy(a).float()
-            sp = torch.from_numpy(sp).float()
+            sp_vec = torch.from_numpy(sp_vec).float()
+            sp_img = torch.from_numpy(sp_img).float()
 
-        s = s.to(self.device); a = a.to(self.device); sp = sp.to(self.device)
-        s_shift, s_scale, a_shift, a_scale, out_shift, out_scale = \
-            self.init_normalization_to_data(s, a, sp, set_transformations)
+        a = a.to(self.device)
+        s_vec = s_vec.to(self.device); s_img = s_img.to(self.device)
+        sp_vec = sp_vec.to(self.device); sp_img = sp_img.to(self.device)
 
         # prepare data for learning
         # note how Y is normalized & residual
-        X = (s, a) ; Y = (sp - s - out_shift) / (out_scale + 1e-8)
+        X = (s_vec, s_img, a) ; Y = (sp_vec, sp_img)
 
         return fit_model(
-            self.dynamics_net, X, Y, self.dynamics_opt, self.loss_fn,
+            self.dynamics_net, self.img_enc, X, Y, self.dynamics_opt, self.loss_fn,
             batch_size, train_epochs, max_steps=max_steps)
 
     def local_lipschitz_coeff(self, s, a):
@@ -377,7 +371,60 @@ class DynamicsNet(nn.Module):
         self.set_transformations(s_shift, s_scale, a_shift, a_scale, out_shift, out_scale)
 
 
-def fit_model(nn_model, X, Y, optimizer, loss_fn,
+def replace_submodules(
+        root_module: nn.Module,
+        predicate: Callable[[nn.Module], bool],
+        func: Callable[[nn.Module], nn.Module]) -> nn.Module:
+    """
+    Replace all submodules selected by the predicate with
+    the output of func.
+
+    predicate: Return true if the module is to be replaced.
+    func: Return new module to use.
+    """
+    if predicate(root_module):
+        return func(root_module)
+
+    bn_list = [k.split('.') for k, m
+               in root_module.named_modules(remove_duplicate=True)
+               if predicate(m)]
+    for *parent, k in bn_list:
+        parent_module = root_module
+        if len(parent) > 0:
+            parent_module = root_module.get_submodule('.'.join(parent))
+        if isinstance(parent_module, nn.Sequential):
+            src_module = parent_module[int(k)]
+        else:
+            src_module = getattr(parent_module, k)
+        tgt_module = func(src_module)
+        if isinstance(parent_module, nn.Sequential):
+            parent_module[int(k)] = tgt_module
+        else:
+            setattr(parent_module, k, tgt_module)
+    # verify that all modules are replaced
+    bn_list = [k.split('.') for k, m
+               in root_module.named_modules(remove_duplicate=True)
+               if predicate(m)]
+    assert len(bn_list) == 0
+    return root_module
+
+
+def replace_bn_with_gn(
+        root_module: nn.Module,
+        features_per_group: int = 16) -> nn.Module:
+    """
+    Relace all BatchNorm layers with GroupNorm.
+    """
+    replace_submodules(
+        root_module=root_module,
+        predicate=lambda x: isinstance(x, nn.BatchNorm2d),
+        func=lambda x: nn.GroupNorm(
+            num_groups=x.num_features // features_per_group,
+            num_channels=x.num_features)
+    )
+    return root_module
+
+def fit_model(nn_model, img_enc, X, Y, optimizer, loss_fn,
               batch_size, epochs, max_steps=1e10):
     """
     :param nn_model:        pytorch model of form Y = f(*X) (class)
@@ -392,11 +439,13 @@ def fit_model(nn_model, X, Y, optimizer, loss_fn,
 
     assert type(X) == tuple
     for d in X: assert type(d) == torch.Tensor
-    assert type(Y) == torch.Tensor
-    device = Y.device
+    assert type(Y) == tuple
+    device = Y[0].device
     for d in X: assert d.device == device
 
-    num_samples = Y.shape[0]
+    policy = nn.Sequential(nn.Linear(513, 64), nn.ReLU(), nn.Linear(64, 64), nn.ReLU(), nn.Linear(64, 1)).to(device)
+
+    num_samples = Y[0].shape[0]
     num_steps = int(num_samples // batch_size)
     epoch_losses = []
     steps_so_far = 0
@@ -406,18 +455,33 @@ def fit_model(nn_model, X, Y, optimizer, loss_fn,
 
         for mb in range(num_steps):
             data_idx = rand_idx[mb*batch_size:(mb+1)*batch_size]
-            batch_X  = [d[data_idx] for d in X]
-            batch_Y  = Y[data_idx]
+            batch_s_vec, batch_s_img, batch_a = [d[data_idx] for d in X]
+            batch_sp_vec, batch_sp_img  = [y[data_idx] for y in Y]
+
             optimizer.zero_grad()
-            Y_hat    = nn_model.forward(*batch_X)
-            loss_dict = loss_fn(batch_X, Y_hat, batch_Y)
-            loss_dict['loss'].backward()
+
+            batch_s_img = torch.movedim(batch_s_img, 3, 1)
+            batch_s_img_enc = img_enc(batch_s_img)
+            batch_s = torch.cat([batch_s_vec, batch_s_img_enc], dim=-1)
+            Y_hat = nn_model.forward(batch_s, batch_a)
+
+            with torch.no_grad():
+                batch_sp_img = torch.movedim(batch_sp_img, 3, 1)
+                batch_sp_img_enc = img_enc(batch_sp_img)
+                batch_Y = torch.cat([batch_sp_vec, batch_sp_img_enc], dim=-1)
+
+            policy_loss = F.mse_loss(policy(batch_s), batch_a)
+            loss = F.mse_loss(Y_hat, batch_Y) + policy_loss * 0.1
+            loss.backward()
+
+            # loss_dict = loss_fn(batch_X, Y_hat, batch_Y)
+            # loss_dict['loss'].backward()
             optimizer.step()
-            loss_dict['loss'] = loss_dict['loss'].detach().to('cpu').numpy()
-            for key, value in loss_dict.items():
-                if key == "mse_loss_tensor":
-                    continue
-                ep_loss[key] += value
+            # loss_dict['loss'] = loss_dict['loss'].detach().to('cpu').numpy()
+            # for key, value in loss_dict.items():
+            #     if key == "mse_loss_tensor":
+            #         continue
+            #     ep_loss[key] += value
         epoch_losses.append(ep_loss)
         steps_so_far += num_steps
         if steps_so_far >= max_steps:

@@ -105,7 +105,7 @@ def main():
 
     # Construct Dynamics Model
     d_config = config.dynamics
-    dynamics = WorldModel(s.shape[1], a.shape[1], d_config=d_config,
+    dynamics = WorldModel(513, a.shape[1], d_config=d_config,
                           hidden_size=d_config.layers,
                           fit_lr=d_config.lr,
                           fit_wd=d_config.weight_decay,
