@@ -27,6 +27,10 @@ class StateEncoder(nn.Module):
         s_vec = (s_vec - self.vec_shift) / (self.vec_scale + 1e-6)
         s_img = (s_img - self.img_shift) / (self.img_scale + 1e-6)
         s_img = torch.movedim(s_img, -1, -3)
+        if len(s_vec.shape) == 1:
+            s_vec = s_vec.unsqueeze(0)
+        if len(s_img.shape) == 3:
+            s_img = s_img.unsqueeze(0)
         s_enc = torch.cat([s_vec, self.img_enc(s_img)], dim=1)
         s_enc = self.fc(s_enc)
         return self.head(s_enc)

@@ -14,3 +14,4 @@ def register(id, entry_point, *args, **kwargs):
 
 register(id="PendulumSwingupCont-v0", entry_point="correct_il.envs.pendulum_env:PendulumEnvCont", max_episode_steps=500)
 register(id="PendulumSwingupDisc-v0", entry_point="correct_il.envs.pendulum_env:PendulumEnvDiscont", max_episode_steps=500)
+register(id="PendulumSwingupContImg-v0", entry_point="correct_il.envs.pendulum_env:PendulumEnvContImg", max_episode_steps=500)

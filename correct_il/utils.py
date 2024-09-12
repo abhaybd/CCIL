@@ -168,6 +168,7 @@ def load_env(config):
         env = gym.make(config.env)
     return env, meta_env
 
+import cv2
 def evaluate_on_environment(
     env: gym.Env, algo, n_trials: int = 10, render: bool = False, metaworld=False,
     sensor_noise_size = None, actuator_noise_size=None):
@@ -183,7 +184,10 @@ def evaluate_on_environment(
             observation = env.getDroneStateVector(0)
         episode_reward = 0.0
         steps = 0
+        video = []
         while True:
+            if isinstance(observation, tuple) and trail % 10 == 0: # record 10% of trials
+                video.append((observation[1]*255).astype(np.uint8))
 
             # take action
             if sensor_noise_size:
@@ -209,23 +213,44 @@ def evaluate_on_environment(
         success += info['success'] if 'success' in info else 0
         episode_rewards.append(episode_reward)
         trail+=1
+        print(trail, episode_reward, success)
         if trail >=n_trials:
             break
+
+        if video:
+            breakpoint()
+            os.makedirs('vids', exist_ok=True)
+            height, width, _ = video[0].shape
+            size = (width, height)
+            out = cv2.VideoWriter(f'vids/trial_{trail}.mp4', cv2.VideoWriter_fourcc(*'mp4v'), 50.0, size)
+            for frame in video:
+                out.write(frame)
+            out.release()
 
     return episode_rewards, success
 
 class D3Agent():
-    def __init__(self, policy, device):
+    def __init__(self, policy, device, state_enc=None):
         self.policy = policy
         self.device = device
+        self.state_enc = state_enc
 
     def load(self, model_folder, device):
         # load is handled at init
         pass
     # For 1-batch query only!
     def predict(self, sample):
+        sample = sample[0]
         with torch.no_grad():
-            input = torch.from_numpy(sample[0]).float().unsqueeze(0).to(self.device)
+            if isinstance(sample, tuple):
+                assert self.state_enc is not None
+                vec, img = sample
+                vec = torch.from_numpy(vec).float().to(self.device)
+                img = torch.from_numpy(img).float().to(self.device)
+                sample = self.state_enc(vec, img)
+            else:
+                sample = torch.from_numpy(sample).float().to(self.device)
+            input = sample.squeeze().float().unsqueeze(0).to(self.device)
             at = self.policy(input)[0].cpu().numpy()
         return at
 

@@ -6,7 +6,7 @@ output:
   folder_suffix: ""
 data:
   expert: None
-  pkl: 'data/pendulum_img_50.pkl'
+  pkl: 'data/pendulum_img_50_noised.pkl'
   num_traj: '...'
   horizon: '...'
   num_datapoints: '...'

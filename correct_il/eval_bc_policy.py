@@ -38,7 +38,15 @@ def main():
     device = 'cuda'
     policy = torch.jit.load(os.path.join(output_folder, f'policy.pt'))
     policy.to(device)
-    agent = D3Agent(policy, device)
+
+    enc_path = os.path.join(config.output.dynamics, "state_enc.pkl")
+    if os.path.isfile(enc_path):
+        with open(enc_path, 'rb') as f:
+            state_enc = pickle.load(f)
+    else:
+        state_enc = None
+
+    agent = D3Agent(policy, device, state_enc=state_enc)
 
     sweep_noises = [0] if len(config.eval.noise) == 0 else config.eval.noise
     print(sweep_noises)

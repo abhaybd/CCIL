@@ -37,6 +37,7 @@ def main():
         while not done and t < args.horizon:
             state = env.get_state()
             action = expert_policy(state)
+            action += np.random.randn() * 5
             next_obs, rew, done, _ = env.step(action)
             total_rew += rew
             traj["observations"].append(obs[0])
@@ -44,7 +45,7 @@ def main():
             traj["actions"].append(action)
             obs = next_obs
             t += 1
-        for k, v in traj:
+        for k, v in traj.items():
             traj[k] = np.array(v)
         trajs.append(traj)
         total_rews.append(total_rew)

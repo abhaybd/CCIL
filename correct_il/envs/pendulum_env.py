@@ -212,8 +212,7 @@ if __name__ == "__main__":
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter('pendulum_output.mp4', fourcc, 50.0, (64, 64))
 
-    # Run the environment for 20 seconds
-    num_steps = int(20 / env.dt)
+    num_steps = int(200)
     for _ in range(num_steps):
         x = env.get_state()
         theta = np.arctan2(x[0], x[1])
@@ -223,6 +222,9 @@ if __name__ == "__main__":
             action = -20.11*(theta - np.pi) - 7.08 * x[2]
         else:
             action = -x[2] * (0.5 * x[2]**2 - 9.81*x[1] - 9.81)
+        print(action, end=", ")
+        action += np.random.randn() * 5
+        print(action)
 
         obs, _, _, _ = env.step(action)
         img = (obs[1] * 255).astype(np.uint8)  # Convert to uint8 for video
