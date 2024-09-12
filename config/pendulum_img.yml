@@ -10,6 +10,12 @@ data:
   num_traj: '...'
   horizon: '...'
   num_datapoints: '...'
+state_encoder:
+  latent_dim: 32
+  layers: []
+  policy_layers: [64, 64]
+  policy_loss_weight: 0.01
+  target_network_tau: 0.0001
 dynamics:
   lipschitz_type: 'none'
   lipschitz_constraint: 2.0
@@ -20,8 +26,8 @@ dynamics:
   weight_decay: 0.00001
   layers: [512, 512]
   activation: relu
-  train_epochs: 100
-  batch_size: 10
+  train_epochs: 1000
+  batch_size: 4950
   val_percentage: 1
 aug:
   type: 'backward_euler_fast'

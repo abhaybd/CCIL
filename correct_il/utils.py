@@ -23,19 +23,24 @@ def seed(seed):
     torch.manual_seed(seed)
 
 
-def build_dataset(trajectories: list) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def build_dataset(trajectories: list, encoded=True) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     s = np.concatenate([traj["observations"][:-1] for traj in trajectories])
-    s_img = np.concatenate([traj["img_observations"][:-1] for traj in trajectories])
     a = np.concatenate([traj["actions"][:-1] for traj in trajectories])
     if len(a.shape) == 1:
         a = np.expand_dims(a, axis=-1)
     sp = np.concatenate([traj["observations"][1:] for traj in trajectories])
-    sp_img = np.concatenate([traj["img_observations"][1:] for traj in trajectories])
-    return (s, s_img), a, (sp, sp_img)
+    if not encoded:
+        s_img = np.concatenate([traj["img_observations"][:-1] for traj in trajectories])
+        sp_img = np.concatenate([traj["img_observations"][1:] for traj in trajectories])
+        return (s, s_img), a, (sp, sp_img)
+    else:
+        return s, a, sp
 
-def load_data(config):
-    # TODO limit data number
-    data_path = config.data.pkl
+def load_data(config, encoded=True):
+    if encoded:
+        data_path = os.path.join(config.output.dynamics, "encoded_dataset.pkl")
+    else:
+        data_path = config.data.pkl
     with open(data_path, "rb") as f:
         data = pickle.load(f)
     if config.data.data_frac and config.data.data_frac < 1.0:
@@ -45,7 +50,7 @@ def load_data(config):
         n_traj = round(len(data) * config.data.data_frac)
         print(f"Sampling {n_traj} of {len(data)} trajectories")
         data = [data[i] for i in idx[:n_traj]]
-    return build_dataset(data)
+    return build_dataset(data, encoded=encoded)
 
 def dataset_to_d3rlpy(s, a, _):
     import d3rlpy

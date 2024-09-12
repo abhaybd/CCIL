@@ -30,8 +30,7 @@ def construct_parser():
 def plot_loss(train_loss, fn, xbar=None, title='Train Loss'):
     fig = plt.figure()
     ax = fig.add_subplot()
-    ax.set_title("Dynamics Model Loss")
-    ax.set_ylabel(title)
+    ax.set_title(title)
     ax.set_xlabel("Epoch")
     if xbar:
         ax.axhline(xbar, linestyle="--", color="black")
@@ -91,6 +90,44 @@ def list_of_dict_to_dict_of_list(a_list, divisor=1.0):
             new_list[k].append(a_dict[k] / divisor)
     return new_list
 
+def encode_dataset(config, state_enc: StateEncoder, output_folder: str):
+    with open(config.data.pkl, "rb") as f:
+        data = pickle.load(f)
+    enc_data = []
+    for traj in data:
+        s_vec = torch.from_numpy(np.array(traj["observations"])).float().cuda()
+        s_img = torch.from_numpy(np.array(traj["img_observations"])).float().cuda()
+        a = traj["actions"]
+        s_enc = state_enc(s_vec, s_img)
+        enc_data.append({
+            "observations": s_enc.detach().cpu().numpy(),
+            "actions": a
+        })
+    with open(os.path.join(output_folder, "encoded_dataset.pkl"), "wb") as f:
+        pickle.dump(enc_data, f)
+
+class MLPPolicy(nn.Module):
+    def __init__(self, latent_dim: int, action_dim: int, layers: list):
+        super().__init__()
+        policy_layers = layers + [action_dim]
+        self.layers = nn.Sequential(nn.Linear(latent_dim, policy_layers[0]))
+        for i in range(len(policy_layers)-1):
+            self.layers.append(nn.ReLU())
+            self.layers.append(nn.Linear(policy_layers[i], policy_layers[i+1]))
+
+        self.register_buffer("a_shift", torch.zeros(action_dim))
+        self.register_buffer("a_scale", torch.ones(action_dim))
+
+    def forward(self, x):
+        a = self.layers(x)
+        a = a * (self.a_scale + 1e-6) + self.a_shift
+        return a
+
+    def set_transformations(self, a_shift, a_scale):
+        self.a_shift.copy_(a_shift)
+        self.a_scale.copy_(a_scale)
+
+
 def main():
     arg_parser = construct_parser()
     config = parse_config(arg_parser)
@@ -105,9 +142,13 @@ def main():
     seed(config.seed)
 
     # Load Data
-    s, a, sp = load_data(config)
+    s, a, sp = load_data(config, encoded=False)
 
-    latent_dim = 128
+    s_vec, s_img = [torch.from_numpy(x).float().cuda() for x in s]
+    sp_vec, sp_img = [torch.from_numpy(x).float().cuda() for x in sp]
+    a = torch.from_numpy(a).float().cuda()
+
+    latent_dim = config.state_encoder.latent_dim
 
     # Construct Dynamics Model
     d_config = config.dynamics
@@ -118,18 +159,26 @@ def main():
                           device="cpu" if config.no_gpu else "cuda",
                           activation=d_config.activation)
     
-    state_enc = StateEncoder(latent_dim, 1).cuda()
-    policy = nn.Sequential(nn.Linear(latent_dim, 64), nn.ReLU(), nn.Linear(64, a.shape[-1])).cuda()
+    state_enc = StateEncoder(latent_dim, vec_dim=s[0].shape[-1], fc_layers=config.state_encoder.layers).cuda()
+    state_enc.fit_scaler(s_vec, s_img)
+    target_state_enc = StateEncoder(latent_dim, vec_dim=s[0].shape[-1], fc_layers=config.state_encoder.layers).cuda()
+    target_state_enc.fit_scaler(s_vec, s_img)
+    target_state_enc.load_state_dict(state_enc.state_dict())
+
+    a_shift = torch.mean(a, dim=0)
+    a_scale = torch.mean(torch.abs(a - a_shift), dim=0)
+    dynamics.dynamics_net.set_transformations(a_shift=a_shift, a_scale=a_scale)
+
+    policy = MLPPolicy(latent_dim, a.shape[-1], config.state_encoder.policy_layers).cuda()
+    policy.set_transformations(a_shift, a_scale)
 
     optimizer = torch.optim.Adam(list(state_enc.parameters()) + list(policy.parameters()) + list(dynamics.parameters()), lr=d_config.lr, weight_decay=d_config.weight_decay)
-
-    s_vec, s_img = [torch.from_numpy(x).float().cuda() for x in s]
-    sp_vec, sp_img = [torch.from_numpy(x).float().cuda() for x in sp]
-    a = torch.from_numpy(a).float().cuda()
 
     batch_size = d_config.batch_size
     n_samples = a.shape[0]
     n_steps = n_samples // batch_size
+    policy_loss_weight: float = config.state_encoder.policy_loss_weight
+    tau = config.state_encoder.target_network_tau
     epoch_losses = []
     for _ in tqdm(range(d_config.train_epochs)):
         rand_idx = torch.LongTensor(np.random.permutation(n_samples)).cuda()
@@ -146,14 +195,14 @@ def main():
             optimizer.zero_grad()
             s_enc = state_enc(batch_s_vec, batch_s_img)
             with torch.no_grad():
-                sp_enc = state_enc(batch_sp_vec, batch_sp_img)
+                sp_enc = target_state_enc(batch_sp_vec, batch_sp_img)
             pred_sp_enc = dynamics.predict(s_enc, batch_a)
 
             batch_a_pred = policy(s_enc)
             policy_loss = F.mse_loss(batch_a_pred, batch_a)
 
             dynamics_loss = F.mse_loss(pred_sp_enc, sp_enc)
-            loss = dynamics_loss + 0.1 * policy_loss
+            loss = dynamics_loss + policy_loss_weight * policy_loss
 
             loss.backward()
             optimizer.step()
@@ -162,6 +211,8 @@ def main():
             ep_loss['dynamics_loss'] += dynamics_loss.item()
             ep_loss['policy_loss'] += policy_loss.item()
         epoch_losses.append(ep_loss)
+        for target_param, param in zip(target_state_enc.parameters(), state_enc.parameters()):
+            target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
     train_loss = list_of_dict_to_dict_of_list(epoch_losses, n_steps)
 
     # Save Model and config
@@ -176,6 +227,7 @@ def main():
     with open(os.path.join(output_folder, "policy.pkl"), "wb") as f:
         pickle.dump(policy, f)
 
+    encode_dataset(config, state_enc, output_folder)
 
     # Report Validation Loss
     s_enc = state_enc(s_vec, s_img)

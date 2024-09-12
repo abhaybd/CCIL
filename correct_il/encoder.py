@@ -6,7 +6,7 @@ from typing import Callable, Optional, List
 class StateEncoder(nn.Module):
     def __init__(self, latent_dim, vec_dim=0, fc_layers: Optional[List[int]]=None):
         super().__init__()
-        resnet = torchvision.models.resnet18(weights="IMAGENET1K_V1")
+        resnet = torchvision.models.resnet18()
         resnet.fc = nn.Identity()
         self.img_enc = replace_bn_with_gn(resnet)
         self.vec_dim = vec_dim
@@ -18,12 +18,24 @@ class StateEncoder(nn.Module):
         else:
             self.fc = nn.Identity()
         self.head = nn.Linear(fc_layers[-1] if fc_layers else 512 + vec_dim, latent_dim)
+        self.register_buffer('vec_shift', torch.zeros(vec_dim))
+        self.register_buffer('vec_scale', torch.ones(vec_dim))
+        self.register_buffer('img_shift', torch.tensor(0.))
+        self.register_buffer('img_scale', torch.tensor(1.))
 
     def forward(self, s_vec, s_img):
+        s_vec = (s_vec - self.vec_shift) / (self.vec_scale + 1e-6)
+        s_img = (s_img - self.img_shift) / (self.img_scale + 1e-6)
         s_img = torch.movedim(s_img, -1, -3)
         s_enc = torch.cat([s_vec, self.img_enc(s_img)], dim=1)
         s_enc = self.fc(s_enc)
         return self.head(s_enc)
+
+    def fit_scaler(self, s_vec, s_img):
+        self.vec_shift, self.img_shift = torch.mean(s_vec, dim=0), torch.mean(s_img, dim=0)
+        self.vec_scale = torch.mean(torch.abs(s_vec - self.vec_shift), dim=0)
+        self.img_scale = torch.mean(torch.abs(s_img - self.img_shift), dim=0)
+
 
 def replace_submodules(
         root_module: nn.Module,
