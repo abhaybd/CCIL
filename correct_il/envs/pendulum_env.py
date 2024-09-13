@@ -31,6 +31,22 @@ class PendulumEnv_NP(gym.Env):
         self.curr_state = np.array([np.sin(theta), np.cos(theta), theta_dot])
         return self._obs()
 
+    def render(self, mode="rgb_array"):
+        if mode != "rgb_array":
+            raise NotImplementedError("Only rgb_array mode is supported")
+        obs = np.zeros((self.img_h, self.img_w, 3))
+        color = (255, 255, 255)
+        center = (self.img_w//2, self.img_h//2)
+        cv2.circle(obs, center, 4, color, -1)
+        pendulum_len = 24 # px
+        # rotate 90deg CCW to get rotation in image
+        cos_th, sin_th = self.curr_state[0], -self.curr_state[1]
+        pendulum_end_px = np.round(np.array([cos_th, sin_th]) * pendulum_len).astype(int)
+        x, y = 32 + np.array([1, -1]) * pendulum_end_px
+        cv2.circle(obs, (x, y), 4, color, -1)
+        cv2.line(obs, center, (x, y), color, 8)
+        return obs.astype(np.uint8)
+
     def _dynamics(self, s, a):
         out = np.array([s[2] * s[1],
                         s[2] * -s[0],
@@ -41,18 +57,7 @@ class PendulumEnv_NP(gym.Env):
         if not self.img_obs:
             return self.curr_state
         else:
-            obs = np.zeros((self.img_h, self.img_w, 3))
-            color = (255, 255, 255)
-            center = (self.img_w//2, self.img_h//2)
-            cv2.circle(obs, center, 4, color, -1)
-            pendulum_len = 24 # px
-            # rotate 90deg CCW to get rotation in image
-            cos_th, sin_th = self.curr_state[0], -self.curr_state[1]
-            pendulum_end_px = np.round(np.array([cos_th, sin_th]) * pendulum_len).astype(int)
-            x, y = 32 + np.array([1, -1]) * pendulum_end_px
-            cv2.circle(obs, (x, y), 4, color, -1)
-            cv2.line(obs, center, (x, y), color, 8)
-            obs /= 255
+            obs = self.render() / 255.
             return self.curr_state[-1:], obs
 
     def set_state(self, state: np.ndarray):

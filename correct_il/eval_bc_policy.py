@@ -54,6 +54,8 @@ def main():
     color_end='\033[0m'
     for noise in sweep_noises:
         rewards, success = evaluate_on_environment(env,agent,n_trials=100,metaworld=meta_env,
+                                                   render_dir=os.path.join(output_folder, f'eval_{noise}'),
+                                                   render_freq=10,
                                                    sensor_noise_size=noise, actuator_noise_size=noise)
         print(f'{color_begin}Noise size {noise} {np.average(rewards)} {np.std(rewards)}{color_end}')
         suffix = f"_noise_{noise}" if len(config.eval.noise) > 0 else ""

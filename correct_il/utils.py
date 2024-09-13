@@ -6,10 +6,10 @@ os.environ["D4RL_SUPPRESS_IMPORT_ERROR"] = "1"
 import torch
 import numpy as np
 import random
-from typing import Tuple
+from typing import Optional, Tuple
 import pickle
 import gym,d4rl
-
+import cv2
 
 from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment
@@ -168,9 +168,8 @@ def load_env(config):
         env = gym.make(config.env)
     return env, meta_env
 
-import cv2
 def evaluate_on_environment(
-    env: gym.Env, algo, n_trials: int = 10, render: bool = False, metaworld=False,
+    env: gym.Env, algo, n_trials: int = 10, render_dir: Optional[str]=None, render_freq=1, metaworld=False,
     sensor_noise_size = None, actuator_noise_size=None):
     """Returns scorer function of evaluation on environment.
     """
@@ -184,11 +183,8 @@ def evaluate_on_environment(
             observation = env.getDroneStateVector(0)
         episode_reward = 0.0
         steps = 0
-        video = []
+        video = [env.render(mode='rgb_array')] if render_dir and trail % render_freq == 0 else None
         while True:
-            if isinstance(observation, tuple) and trail % 10 == 0: # record 10% of trials
-                video.append((observation[1]*255).astype(np.uint8))
-
             # take action
             if sensor_noise_size:
                 observation = observation * (1-sensor_noise_size) + sensor_noise_size * \
@@ -203,8 +199,8 @@ def evaluate_on_environment(
             if drone_task:
                 observation = env.getDroneStateVector(0)
             episode_reward += reward
-            if render:
-                env.render()
+            if video is not None:
+                video.append(env.render(mode='rgb_array'))
             if done:
                 break
             if metaworld and steps > 499:
@@ -212,20 +208,21 @@ def evaluate_on_environment(
             steps += 1
         success += info['success'] if 'success' in info else 0
         episode_rewards.append(episode_reward)
+
+        if video:
+            os.makedirs(render_dir, exist_ok=True)
+            height, width, _ = video[0].shape
+            size = (width, height)
+            fps = (1/env.dt) if hasattr(env, 'dt') else 30
+            out = cv2.VideoWriter(os.path.join(render_dir, f'trial_{trail}.mp4'), cv2.VideoWriter_fourcc(*'mp4v'), fps, size)
+            for frame in video:
+                out.write(frame)
+            out.release()
+
         trail+=1
         print(trail, episode_reward, success)
         if trail >=n_trials:
             break
-
-        if video:
-            breakpoint()
-            os.makedirs('vids', exist_ok=True)
-            height, width, _ = video[0].shape
-            size = (width, height)
-            out = cv2.VideoWriter(f'vids/trial_{trail}.mp4', cv2.VideoWriter_fourcc(*'mp4v'), 50.0, size)
-            for frame in video:
-                out.write(frame)
-            out.release()
 
     return episode_rewards, success
 
